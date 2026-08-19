@@ -53,6 +53,31 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
   schwebende Blöcke im Hintergrund, Partikel-Bursts, XP-Bar-Animationen, „Press Start 2P".
 - 🔐 **Auth** — JWT-Login (bcrypt-gehashte Passwörter), Rollen: `admin` / `player`.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/admin-dashboard.png"><img src="docs/screenshots/admin-dashboard.png" alt="Admin-Dashboard"></a><br><sub><b>Admin-Dashboard</b> mit Host-Metriken und Serverliste</sub></td>
+    <td width="50%"><a href="docs/screenshots/server-dashboard.png"><img src="docs/screenshots/server-dashboard.png" alt="Server-Dashboard"></a><br><sub><b>Server-Dashboard</b> mit Live-Metriken und Charts</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/modpack-browser.png"><img src="docs/screenshots/modpack-browser.png" alt="Modpack-Browser"></a><br><sub><b>Modpack-Browser</b> für Modrinth und CurseForge</sub></td>
+    <td width="50%"><a href="docs/screenshots/job-log.png"><img src="docs/screenshots/job-log.png" alt="Job-Log"></a><br><sub><b>Job-Log</b> für Installationen, Updates und Backups</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/backups.png"><img src="docs/screenshots/backups.png" alt="Backup-Verwaltung"></a><br><sub><b>Backup-Verwaltung</b> mit Zeitplänen und Limits</sub></td>
+    <td width="50%"><a href="docs/screenshots/file-browser.png"><img src="docs/screenshots/file-browser.png" alt="Datei-Browser"></a><br><sub><b>Datei-Browser</b> mit Editor und Upload</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/user-management.png"><img src="docs/screenshots/user-management.png" alt="Benutzerverwaltung"></a><br><sub><b>Benutzerverwaltung</b> mit Rollen und Serverzuweisungen</sub></td>
+    <td width="50%"><a href="docs/screenshots/resource-allocation.png"><img src="docs/screenshots/resource-allocation.png" alt="Ressourcenzuweisung"></a><br><sub><b>Ressourcenzuweisung</b> für CPU-Kerne und RAM</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/server-settings.png"><img src="docs/screenshots/server-settings.png" alt="Server-Einstellungen"></a><br><sub><b>Server-Einstellungen</b> für Gameplay, Welt und Netzwerk</sub></td>
+    <td width="50%"><a href="docs/screenshots/panel-settings.png"><img src="docs/screenshots/panel-settings.png" alt="Panel-Einstellungen"></a><br><sub><b>Panel-Einstellungen</b> für Provider und globale Backups</sub></td>
+  </tr>
+</table>
+
 ## Tech Stack
 
 | Schicht | Technologie |
