@@ -95,8 +95,8 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
 docker compose up -d --build
 ```
 
-Läuft auf **`http://localhost:3100`** (Host-Port 3000 ist hier bereits durch open-webui
-belegt — daher mappt der Stack 3100 → 3000; änderbar via `MC_PANEL_PORT` in `.env`).
+Läuft standardmäßig auf **`http://localhost:3100`**. Der veröffentlichte Host-Port
+kann über `MC_PANEL_PORT` in `.env` geändert werden.
 Daten persistieren in den Volumes `panel-data` (SQLite-DB inkl. Metrik-Historie) und
 `panel-servers` (heruntergeladene Modpacks).
 

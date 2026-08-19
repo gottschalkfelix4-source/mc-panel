@@ -1,6 +1,5 @@
-# MC Panel stack.
-# Port 3000 on this host is already taken by open-webui, so the panel
-# is published on host port 3100 (override with MC_PANEL_PORT in .env).
+# MC Panel stack. The published host port defaults to 3100 and can be
+# overridden with MC_PANEL_PORT in .env.
 services:
   mc-panel:
     build: .

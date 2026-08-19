@@ -5,8 +5,7 @@ Minecraft Server Hosting Panel (Demo). Express 5 + Socket.IO + `node:sqlite` Bac
 Vanilla-JS-Frontend ohne Build-Schritt. CommonJS (`"type": "commonjs"`).
 
 ## Befehle
-- `docker compose up -d --build` — Deployment als Stack auf **Host-Port 3100**
-  (3000 ist durch open-webui belegt, 4173 durch creeperpanel — nicht anfassen!).
+- `docker compose up -d --build` — Deployment als Stack auf **Host-Port 3100**.
   Override via `MC_PANEL_PORT` in `.env`. Volumes: `panel-data` (DB),
   `panel-servers` (Server/Modpacks), `panel-backups` (ZIP-Backups).
 - `npm start` — lokal, Port aus `.env` (Default 3000)
