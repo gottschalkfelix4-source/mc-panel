@@ -1,0 +1,21 @@
+node_modules
+npm-debug.log*
+
+# Runtime data — never baked into the image
+panel.db
+panel.db-*
+data
+servers
+logs
+uploads
+
+# Git & editor
+.git
+.vscode
+.idea
+
+# Env & local tooling
+.env
+.dockerignore
+Dockerfile
+docker-compose.yml

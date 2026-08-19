@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MC Panel — Minecraft Server Hosting</title>
+  <meta name="description" content="Verspieltes Minecraft Server Hosting Panel mit Live-Metriken und Modpack-Support.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='7' fill='%237ed957'/><rect y='7' width='16' height='9' fill='%238a5f3c'/></svg>">
+</head>
+<body>
+
+  <!-- animated floating-block background -->
+  <canvas id="bg"></canvas>
+
+  <!-- connection lost indicator -->
+  <div id="conn-lost" class="hidden">Verbindung verloren …</div>
+
+  <!-- ============================== LOGIN ============================== -->
+  <div id="login-screen">
+    <div class="login-panel">
+      <div class="login-logo">
+        <span class="pix" data-icon="block:grass"></span>
+        <span class="login-title">MC PANEL</span>
+      </div>
+      <p class="login-sub">Dein Minecraft Server Hosting Panel</p>
+      <form id="login-form">
+        <input id="login-user" class="input" placeholder="Benutzername" autocomplete="username" required>
+        <input id="login-pass" class="input" type="password" placeholder="Passwort" autocomplete="current-password" required>
+        <div id="login-error" class="hidden"></div>
+        <button id="login-btn" class="btn btn-primary" type="submit">Einloggen</button>
+      </form>
+      <p class="login-hint">Demo: admin / admin123 &nbsp;·&nbsp; player / player123</p>
+    </div>
+  </div>
+
+  <!-- ============================== APP SHELL ============================== -->
+  <div id="app-shell" class="hidden">
+
+    <aside class="sidebar">
+      <div class="side-logo">
+        <span class="pix" data-icon="block:grass"></span>
+        <span>MC PANEL</span>
+      </div>
+
+      <a class="nav-item" href="#/" data-nav="dashboard">
+        <span data-icon="ui:dashboard"></span><span>Dashboard</span>
+      </a>
+      <a class="nav-item" href="#/servers" data-nav="servers">
+        <span data-icon="ui:servers"></span><span>Server</span>
+      </a>
+      <a class="nav-item" href="#/modpacks" data-nav="modpacks">
+        <span data-icon="ui:box"></span><span>Modpacks</span>
+      </a>
+      <a class="nav-item hidden" href="#/jobs" data-nav="jobs" id="nav-jobs">
+        <span data-icon="ui:bolt"></span><span>Jobs</span>
+      </a>
+      <a class="nav-item" href="#/users" data-nav="users" id="nav-users">
+        <span data-icon="ui:players"></span><span>Benutzer</span>
+      </a>
+      <a class="nav-item" href="#/settings" data-nav="settings" id="nav-settings">
+        <span data-icon="ui:gear"></span><span>Einstellungen</span>
+      </a>
+
+      <div class="side-foot">
+        <p id="tip-text"></p>
+        <div class="user-row">
+          <span class="pix" data-icon="block:creeper"></span>
+          <span id="user-name"></span>
+          <button id="btn-logout" class="icon-btn no-burst" title="Ausloggen" data-icon-btn="ui:logout"></button>
+        </div>
+      </div>
+    </aside>
+
+    <div class="main-col">
+      <header class="topbar">
+        <span class="chip" id="chip-running"><i data-icon="ui:servers"></i><span class="chip-num">–</span>&nbsp;Server</span>
+        <span class="chip" id="chip-cpu"><i data-icon="ui:cpu"></i><span class="chip-num">–</span>&nbsp;CPU</span>
+        <span class="chip" id="chip-ram"><i data-icon="ui:ram"></i><span class="chip-num">–</span>&nbsp;RAM</span>
+        <span class="chip" id="chip-players"><i data-icon="ui:players"></i><span class="chip-num">–</span>&nbsp;Spieler</span>
+        <span class="chip" id="chip-uptime"><i data-icon="ui:clock"></i><span class="chip-num">–</span>&nbsp;Uptime</span>
+      </header>
+
+      <main id="view"></main>
+    </div>
+  </div>
+
+  <!-- overlays -->
+  <div id="particle-layer"></div>
+  <div id="toast-root"></div>
+  <div id="modal-root"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="js/icons.js"></script>
+  <script>
+    /* fill static [data-icon] placeholders before the app boots */
+    (function () {
+      document.querySelectorAll('[data-icon]').forEach(function (el) {
+        var spec = el.getAttribute('data-icon');
+        var parts = spec.split(':');
+        el.innerHTML = parts[0] === 'block' ? Icons.get(parts[1]) : Icons.ui(parts[1]);
+      });
+      document.querySelectorAll('[data-icon-btn]').forEach(function (el) {
+        el.innerHTML = Icons.ui(el.getAttribute('data-icon-btn').split(':')[1]);
+      });
+    })();
+  </script>
+  <script src="js/api.js"></script>
+  <script src="js/management.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/views.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
