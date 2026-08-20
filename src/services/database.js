@@ -1,5 +1,5 @@
 // Database layer: Node 24 built-in SQLite (node:sqlite).
-// Creates the schema on require and seeds default users.
+// Creates and migrates the SQLite schema on require.
 'use strict';
 
 const fs = require('fs');
@@ -19,11 +19,45 @@ db.exec('PRAGMA foreign_keys = ON;');
 db.exec(`
 CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT UNIQUE,
-  password_hash TEXT,
-  role TEXT DEFAULT 'player',
-  created_at INTEGER
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'viewer',
+  created_at INTEGER NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  token_version INTEGER NOT NULL DEFAULT 0,
+  must_change_password INTEGER NOT NULL DEFAULT 0,
+  password_changed_at INTEGER,
+  updated_at INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS app_state (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  actor_user_id INTEGER,
+  actor_username TEXT,
+  actor_role TEXT,
+  event_type TEXT NOT NULL,
+  outcome TEXT NOT NULL,
+  method TEXT,
+  path TEXT,
+  target_type TEXT,
+  target_id TEXT,
+  server_id INTEGER,
+  status_code INTEGER,
+  ip TEXT,
+  user_agent TEXT,
+  details_json TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_events_ts ON audit_events(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_actor ON audit_events(actor_user_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_type ON audit_events(event_type, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_events_server ON audit_events(server_id, ts DESC);
 
 CREATE TABLE IF NOT EXISTS servers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,6 +160,19 @@ CREATE TABLE IF NOT EXISTS modpack_update_state (
 // Legacy panel users used the role name "player"; it is now the read-only viewer role.
 db.prepare("UPDATE users SET role = 'viewer' WHERE role = 'player'").run();
 
+// User security columns for installations created before the setup workflow.
+{
+  const cols = db.prepare('PRAGMA table_info(users)').all();
+  const add = (name, sql) => {
+    if (!cols.some((column) => column.name === name)) db.exec(`ALTER TABLE users ADD COLUMN ${sql}`);
+  };
+  add('active', 'active INTEGER NOT NULL DEFAULT 1');
+  add('token_version', 'token_version INTEGER NOT NULL DEFAULT 0');
+  add('must_change_password', 'must_change_password INTEGER NOT NULL DEFAULT 0');
+  add('password_changed_at', 'password_changed_at INTEGER');
+  add('updated_at', 'updated_at INTEGER');
+}
+
 // Migration: add `installed` column to servers (0 = files not installed yet).
 {
   const cols = db.prepare('PRAGMA table_info(servers)').all();
@@ -158,17 +205,35 @@ db.prepare("UPDATE users SET role = 'viewer' WHERE role = 'player'").run();
 
 const now = () => Date.now();
 
-function seedUsers() {
-  const { c } = db.prepare('SELECT COUNT(*) AS c FROM users').get();
-  if (c > 0) return;
-  const insert = db.prepare(
-    'INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)'
-  );
-  insert.run('admin', bcrypt.hashSync('admin123', 10), 'admin', now());
-  insert.run('player', bcrypt.hashSync('player123', 10), 'viewer', now());
-  console.log('[db] Seeded default users: admin/admin123 (admin), player/player123 (viewer)');
+// Existing installations are already initialized. A fresh database requires the
+// one-time bootstrap workflow and never receives known default credentials.
+{
+  const existing = db.prepare("SELECT value FROM app_state WHERE key = 'setup_complete'").get();
+  if (!existing) {
+    const { count } = db.prepare('SELECT COUNT(*) AS count FROM users').get();
+    db.prepare('INSERT INTO app_state (key, value, updated_at) VALUES (?, ?, ?)')
+      .run('setup_complete', count > 0 ? '1' : '0', now());
+  }
 }
 
-seedUsers();
+// Known demo credentials must never remain usable after an upgrade.
+for (const [username, password] of [['admin', 'admin123'], ['player', 'player123']]) {
+  const user = db.prepare('SELECT id, role, password_hash FROM users WHERE username = ?').get(username);
+  if (user && bcrypt.compareSync(password, user.password_hash)) {
+    if (user.role === 'admin') {
+      db.prepare('DELETE FROM users WHERE id = ?').run(user.id);
+    } else {
+      db.prepare(
+        'UPDATE users SET active = 0, must_change_password = 1, token_version = token_version + 1, updated_at = ? WHERE id = ?'
+      ).run(now(), user.id);
+    }
+  }
+}
+{
+  const { count } = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin' AND active = 1").get();
+  if (count === 0) {
+    db.prepare("UPDATE app_state SET value = '0', updated_at = ? WHERE key = 'setup_complete'").run(now());
+  }
+}
 
 module.exports = { db, now };

@@ -51,7 +51,8 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
   Backup-Jobs mit Fortschritt, Fehlern und Abbruch aktiver Jobs.
 - 🌙 **Dark Minecraft Theme** — Pixel-Art-SVG-Icons (Grass, TNT, Creeper, Diamant …),
   schwebende Blöcke im Hintergrund, Partikel-Bursts, XP-Bar-Animationen, „Press Start 2P".
-- 🔐 **Auth** — JWT-Login (bcrypt-gehashte Passwörter), Rollen: `admin` / `player`.
+- 🔐 **Auth & Audit** — einmalige, token-geschützte Ersteinrichtung ohne bekannte
+  Default-Zugänge, DB-validierte JWT-Sitzungen, Passwortwechsel und Admin-Audit-Log.
 
 ## Screenshots
 
@@ -92,6 +93,8 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
 ### Docker (empfohlen)
 
 ```bash
+cp .env.example .env
+# In .env ein zufälliges JWT_SECRET mit mindestens 32 Zeichen setzen
 docker compose up -d --build
 ```
 
@@ -99,6 +102,10 @@ Läuft standardmäßig auf **`http://localhost:3100`**. Der veröffentlichte Hos
 kann über `MC_PANEL_PORT` in `.env` geändert werden.
 Daten persistieren in den Volumes `panel-data` (SQLite-DB inkl. Metrik-Historie) und
 `panel-servers` (heruntergeladene Modpacks).
+
+Bei einer frischen Datenbank wird der einmalige Setup-Token mit
+`docker compose logs mc-panel` ausgegeben. Die Weboberfläche fragt diesen Token ab und
+erstellt damit den ersten Administrator. Es werden keine bekannten Standardzugänge angelegt.
 
 ```bash
 docker compose logs -f     # Logs ansehen
@@ -112,11 +119,9 @@ npm install
 npm start          # oder: npm run dev (nodemon)
 ```
 
-Dann `http://localhost:3000` öffnen (bzw. `PORT` aus `.env`).
-
-**Demo-Logins:** `admin / admin123` · `player / player123`
-
-Beim ersten Start werden 3 Demo-Server samt 3 h Metrik-Historie angelegt.
+Dann `http://localhost:3000` öffnen (bzw. `PORT` aus `.env`). Für die lokale
+Ersteinrichtung steht der Setup-Token im Terminal. Demo-Server werden nur mit
+`DEMO_MODE=true` erzeugt.
 
 ## Konfiguration (`.env`)
 
@@ -125,6 +130,11 @@ Beim ersten Start werden 3 Demo-Server samt 3 h Metrik-Historie angelegt.
 | `PORT` | `3000` | Web-Port |
 | `DB_FILE` | `./panel.db` | SQLite-Datei (Metriken, Server, Mods, Jobs) |
 | `JWT_SECRET` | — | Secret für Login-Tokens |
+| `SETUP_TOKEN` | automatisch | Optionaler fester Token für die einmalige Ersteinrichtung |
+| `CORS_ORIGINS` | — | Erlaubte Browser-Origins für Cross-Origin-Zugriffe; gleicher Origin funktioniert ohne Eintrag |
+| `TRUST_PROXY` | `0` | Anzahl vertrauenswürdiger Reverse-Proxy-Hops für korrekte IP-basierte Limits |
+| `AUDIT_RETENTION_DAYS` | `90` | Aufbewahrung des Audit-Logs in Tagen |
+| `DEMO_MODE` | `false` | Erstellt Demo-Server und Metrik-Historie nur bei expliziter Aktivierung |
 | `SIMULATION_MODE` | `false` (Docker) | `true` = simulierte Server (kein Java nötig), `false` = echte Java-Prozesse. Ohne Java-Binary fällt das Panel automatisch in die Simulation zurück |
 | `METRICS_INTERVAL_MS` | `2000` | Tick-Intervall der Metriken |
 | `METRICS_RETENTION_HOURS` | `48` | Aufbewahrung der Metrik-Historie |
@@ -137,6 +147,8 @@ Alle Endpunkte (außer `/health` und `/api/auth/login`) benötigen `Authorizatio
 | Methode | Endpunkt | Beschreibung |
 |---|---|---|
 | POST | `/api/auth/login` | Login → `{token, user}` |
+| GET/POST | `/api/setup/status`, `/api/setup/admin` | Sichere einmalige Ersteinrichtung |
+| POST | `/api/auth/password` | Eigenes Passwort ändern und alte Sitzungen widerrufen |
 | GET | `/api/servers` | Server inkl. letzter Metrik |
 | POST | `/api/servers` | Server erstellen |
 | POST | `/api/servers/:id/start|stop|restart` | Power-Aktionen (echte Java-Prozesse) |
@@ -164,6 +176,7 @@ Alle Endpunkte (außer `/health` und `/api/auth/login`) benötigen `Authorizatio
 | GET | `/api/admin/host-metrics` | Host-CPU/RAM/Disk/Uptime (Admin) |
 | GET | `/api/admin/jobs` | Zentrales Job-Log (Admin) |
 | POST | `/api/admin/jobs/:id/cancel` | Aktiven Job abbrechen (Admin) |
+| GET | `/api/admin/audit-events` | Filterbares Audit-Log (Admin) |
 | GET | `/api/modpacks/providers` | Verfügbarkeit der Provider |
 | GET | `/api/modpacks/search?provider=&q=` | Modpack-Suche |
 | GET | `/api/modpacks/:provider/:id/versions` | Versionen eines Packs |
@@ -180,13 +193,17 @@ Alle Endpunkte (außer `/health` und `/api/auth/login`) benötigen `Authorizatio
 ## Projektstruktur
 
 ```
-├── index.js                     # Entry: Express + Socket.IO + Boot
+├── index.js                     # Ausführbarer Launcher und Runtime-Lifecycle
 ├── src/
+│   ├── app.js                         # Testbare Express-/Socket.IO-App-Factory
+│   ├── config.js                      # Validierte Security-/Runtime-Konfiguration
 │   ├── middleware/authMiddleware.js   # JWT requireAuth
 │   ├── routes/api.js                  # Auth, Server, Logs, Metriken
 │   ├── routes/modpacks.js             # Modpack-Suche & Install
 │   └── services/
-│       ├── database.js                # node:sqlite Schema + Seed-User
+│       ├── database.js                # node:sqlite Schema + Migrationen
+│       ├── setupService.js            # Einmalige Admin-Ersteinrichtung
+│       ├── auditService.js            # Persistentes Audit-Log
 │       ├── serverService.js           # CRUD + Demo-Seed + 3h Metrik-Backfill
 │       ├── processManager.js          # Simulierte Server-Prozesse + Logs
 │       ├── metricsService.js          # Tick-Loop, Persistenz, Pruning, History

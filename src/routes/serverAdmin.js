@@ -10,6 +10,8 @@ const propertiesService = require('../services/propertiesService');
 const metricsService = require('../services/metricsService');
 const accessService = require('../services/accessService');
 const jobsService = require('../services/jobsService');
+const auditService = require('../services/auditService');
+const { validateUsername, validatePassword } = require('../services/passwordPolicy');
 const { requireServerAccess } = accessService;
 const {
   requireAuth,
@@ -19,7 +21,6 @@ const {
 } = require('../middleware/authMiddleware');
 
 const ROLES = new Set(['admin', 'operator', 'viewer']);
-const USERNAME_RE = /^[A-Za-z0-9_.-]{3,24}$/;
 
 function publicRole(role) {
   return normalizedRole(role);
@@ -31,6 +32,8 @@ function publicUser(row) {
     username: row.username,
     role: publicRole(row.role),
     createdAt: row.created_at,
+    active: Boolean(row.active),
+    mustChangePassword: Boolean(row.must_change_password),
   };
 }
 
@@ -53,14 +56,6 @@ function sendError(res, error) {
   const message = status === 500 ? 'Interner Serverfehler.' : error.message;
   if (status === 500) console.error('[serverAdmin]', error);
   return res.status(status).json({ error: message });
-}
-
-function validateUsername(username) {
-  return typeof username === 'string' && USERNAME_RE.test(username);
-}
-
-function validatePassword(password) {
-  return typeof password === 'string' && password.length >= 8;
 }
 
 function init(app, io) {
@@ -106,7 +101,7 @@ function init(app, io) {
   });
 
   router.get('/api/users', requireAdmin, (req, res) => {
-    const users = db.prepare('SELECT id, username, role, created_at FROM users ORDER BY id').all();
+    const users = db.prepare('SELECT id, username, role, active, must_change_password, created_at FROM users ORDER BY id').all();
     res.json(users.map((user) => ({
       ...publicUser(user),
       serverIds: accessService.userServerIds(user.id),
@@ -143,6 +138,22 @@ function init(app, io) {
     }
   });
 
+  router.get('/api/admin/audit-events', requireAdmin, (req, res) => {
+    try {
+      const events = auditService.list({
+        limit: req.query.limit,
+        before: req.query.before,
+        eventType: req.query.eventType,
+        outcome: req.query.outcome,
+        actor: req.query.actor,
+        serverId: req.query.serverId,
+      });
+      res.json({ events, nextBefore: events.length ? events[events.length - 1].id : null });
+    } catch (error) {
+      sendError(res, error);
+    }
+  });
+
   router.post('/api/admin/jobs/:id/cancel', requireAdmin, (req, res) => {
     try {
       const result = jobsService.cancelJob(req.params.id);
@@ -162,6 +173,7 @@ function init(app, io) {
     if (!id) return res.status(400).json({ error: 'Ungültige Benutzer-ID.' });
     try {
       const serverIds = accessService.setUserServers(id, (req.body || {}).serverIds);
+      io.in(`user:${id}`).disconnectSockets(true);
       res.json({ userId: id, serverIds });
     } catch (error) {
       const status = Number.isInteger(error.status) ? error.status : 500;
@@ -172,28 +184,28 @@ function init(app, io) {
 
   router.post('/api/users', requireAdmin, (req, res) => {
     const { username, password, role } = req.body || {};
-    if (!validateUsername(username)) {
-      return res.status(400).json({ error: 'Benutzername muss 3 bis 24 Zeichen lang sein und darf nur Buchstaben, Zahlen, _, . und - enthalten.' });
-    }
-    if (!validatePassword(password)) {
-      return res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen lang sein.' });
-    }
+    const usernameError = validateUsername(username);
+    const passwordError = validatePassword(password);
+    if (usernameError) return res.status(400).json({ error: usernameError });
+    if (passwordError) return res.status(400).json({ error: passwordError });
     if (!ROLES.has(role)) return res.status(400).json({ error: 'Rolle muss admin, operator oder viewer sein.' });
     if (db.prepare('SELECT id FROM users WHERE username = ?').get(username)) {
       return res.status(409).json({ error: 'Benutzername ist bereits vergeben.' });
     }
-    try {
+    bcrypt.hash(password, 12).then((passwordHash) => {
       const result = db.prepare(
-        'INSERT INTO users (username, password_hash, role, created_at) VALUES (?, ?, ?, ?)'
-      ).run(username, bcrypt.hashSync(password, 10), role, now());
-      const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
+        `INSERT INTO users
+         (username, password_hash, role, created_at, active, token_version, must_change_password, password_changed_at, updated_at)
+         VALUES (?, ?, ?, ?, 1, 0, 1, ?, ?)`
+      ).run(username, passwordHash, role, now(), now(), now());
+      const user = db.prepare('SELECT id, username, role, active, must_change_password, created_at FROM users WHERE id = ?').get(result.lastInsertRowid);
       res.status(201).json(publicUser(user));
-    } catch (error) {
+    }).catch((error) => {
       if (String(error.message).includes('UNIQUE')) {
         return res.status(409).json({ error: 'Benutzername ist bereits vergeben.' });
       }
       sendError(res, error);
-    }
+    });
   });
 
   router.patch('/api/users/:id', requireAdmin, (req, res) => {
@@ -203,26 +215,52 @@ function init(app, io) {
 
     const body = req.body || {};
     const keys = Object.keys(body);
-    if (!keys.length || keys.some((key) => !['role', 'password'].includes(key))) {
-      return res.status(400).json({ error: 'Es muss role und/oder password angegeben werden.' });
+    if (keys.length !== 1 || keys[0] !== 'role') {
+      return res.status(400).json({ error: 'Über diesen Endpunkt kann nur die Rolle geändert werden.' });
     }
     const hasRole = Object.prototype.hasOwnProperty.call(body, 'role');
-    const hasPassword = Object.prototype.hasOwnProperty.call(body, 'password');
     if (hasRole && !ROLES.has(body.role)) {
       return res.status(400).json({ error: 'Rolle muss admin, operator oder viewer sein.' });
     }
-    if (hasPassword && !validatePassword(body.password)) {
-      return res.status(400).json({ error: 'Passwort muss mindestens 8 Zeichen lang sein.' });
-    }
+    if (user.id === req.user.id) return res.status(409).json({ error: 'Die eigene Rolle kann nicht geändert werden.' });
     if (user.role === 'admin' && hasRole && body.role !== 'admin') {
       const { count } = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get();
       if (count <= 1) return res.status(409).json({ error: 'Der letzte Admin kann nicht herabgestuft werden.' });
     }
 
-    const role = hasRole ? body.role : user.role;
-    const passwordHash = hasPassword ? bcrypt.hashSync(body.password, 10) : user.password_hash;
-    db.prepare('UPDATE users SET role = ?, password_hash = ? WHERE id = ?').run(role, passwordHash, id);
-    res.json(publicUser(db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?').get(id)));
+    const applyUpdate = async () => {
+      const role = hasRole ? body.role : user.role;
+      db.prepare(
+        'UPDATE users SET role = ?, token_version = token_version + 1, updated_at = ? WHERE id = ?'
+      ).run(role, now(), id);
+      io.in(`user:${id}`).disconnectSockets(true);
+      res.json(publicUser(db.prepare('SELECT id, username, role, active, must_change_password, created_at FROM users WHERE id = ?').get(id)));
+    };
+    applyUpdate().catch((error) => sendError(res, error));
+  });
+
+  router.post('/api/users/:id/password-reset', requireAdmin, async (req, res) => {
+    const id = parseId(req.params.id);
+    const target = id && db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+    if (!target) return res.status(404).json({ error: 'Benutzer wurde nicht gefunden.' });
+    if (id === req.user.id) {
+      return res.status(409).json({ error: 'Das eigene Passwort wird über das persönliche Passwortformular geändert.' });
+    }
+    const { adminPassword, newPassword, passwordConfirm } = req.body || {};
+    if (newPassword !== passwordConfirm) return res.status(400).json({ error: 'Passwörter stimmen nicht überein.' });
+    const passwordError = validatePassword(newPassword);
+    if (passwordError) return res.status(400).json({ error: passwordError });
+    const actor = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+    if (!actor || !(await bcrypt.compare(String(adminPassword || ''), actor.password_hash))) {
+      return res.status(403).json({ error: 'Admin-Passwort ist falsch.' });
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    db.prepare(
+      `UPDATE users SET password_hash = ?, token_version = token_version + 1,
+       must_change_password = 1, active = 1, password_changed_at = ?, updated_at = ? WHERE id = ?`
+    ).run(passwordHash, now(), now(), id);
+    io.in(`user:${id}`).disconnectSockets(true);
+    res.json({ ok: true });
   });
 
   router.delete('/api/users/:id', requireAdmin, (req, res) => {
@@ -236,6 +274,7 @@ function init(app, io) {
       const { count } = db.prepare("SELECT COUNT(*) AS count FROM users WHERE role = 'admin'").get();
       if (count <= 1) return res.status(409).json({ error: 'Der letzte Admin kann nicht gelöscht werden.' });
     }
+    io.in(`user:${id}`).disconnectSockets(true);
     db.prepare('DELETE FROM users WHERE id = ?').run(id);
     res.json({ ok: true });
   });

@@ -800,10 +800,33 @@
           } catch (err) { busy(event.target, false); if (err.status !== 401) A().toast(err.message || 'Serverzugriff konnte nicht gespeichert werden.', 'err'); }
         });
       } else if (action === 'password') {
-        var password = await textPrompt('Passwort zurücksetzen', 'Neues Passwort für ' + target.getAttribute('data-name'), '', 'Zurücksetzen', true);
-        if (!password) return;
-        try { await global.API.updateUser(id, { password: password }); A().toast('Passwort wurde zurückgesetzt.', 'ok'); }
-        catch (err) { if (err.status !== 401) A().toast(err.message || 'Passwort konnte nicht geändert werden.', 'err'); }
+        if (String(id) === String(me.id)) return A().openPasswordModal(false);
+        var resetBox = document.createElement('div');
+        resetBox.innerHTML = '<div class="modal-head"><h3 class="modal-title">Passwort zurücksetzen</h3></div><div class="modal-body">' +
+          '<p class="confirm-text">Der Benutzer muss das temporäre Passwort beim nächsten Login ändern.</p>' +
+          '<label class="field"><span>Dein Admin-Passwort</span><input class="input" name="adminPassword" type="password" autocomplete="current-password"></label>' +
+          '<label class="field"><span>Neues Passwort für ' + esc(target.getAttribute('data-name')) + '</span><input class="input" name="newPassword" type="password" autocomplete="new-password"></label>' +
+          '<label class="field"><span>Passwort wiederholen</span><input class="input" name="passwordConfirm" type="password" autocomplete="new-password"></label></div>' +
+          '<div class="modal-foot"><button class="btn btn-ghost" data-reset-act="cancel">Abbrechen</button><button class="btn btn-primary" data-reset-act="save">Zurücksetzen</button></div>';
+        var resetOv = A().openModal(resetBox);
+        resetBox.addEventListener('click', async function (event) {
+          var resetAction = event.target.getAttribute && event.target.getAttribute('data-reset-act');
+          if (resetAction === 'cancel') return A().closeModal(resetOv);
+          if (resetAction !== 'save') return;
+          busy(event.target, true);
+          try {
+            await global.API.resetUserPassword(id, {
+              adminPassword: $('[name="adminPassword"]', resetBox).value,
+              newPassword: $('[name="newPassword"]', resetBox).value,
+              passwordConfirm: $('[name="passwordConfirm"]', resetBox).value,
+            });
+            A().closeModal(resetOv);
+            A().toast('Passwort wurde zurückgesetzt.', 'ok');
+          } catch (err) {
+            busy(event.target, false);
+            if (err.status !== 401) A().toast(err.message || 'Passwort konnte nicht geändert werden.', 'err');
+          }
+        });
       } else if (action === 'delete') {
         var ok = await A().confirm('Benutzer löschen?', '„' + target.getAttribute('data-name') + '“ verliert sofort den Zugriff.', 'Löschen');
         if (!ok) return;

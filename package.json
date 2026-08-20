@@ -5,7 +5,12 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "nodemon index.js"
+    "dev": "nodemon index.js",
+    "check": "node scripts/check-syntax.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "keywords": [
     "minecraft",

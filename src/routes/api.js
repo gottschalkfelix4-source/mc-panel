@@ -2,6 +2,7 @@
 'use strict';
 
 const bcrypt = require('bcrypt');
+const { rateLimit } = require('express-rate-limit');
 const { db } = require('../services/database');
 const serverService = require('../services/serverService');
 const processManager = require('../services/processManager');
@@ -9,6 +10,8 @@ const metricsService = require('../services/metricsService');
 const settingsService = require('../services/settingsService');
 const curseforgeService = require('../services/curseforgeService');
 const accessService = require('../services/accessService');
+const setupService = require('../services/setupService');
+const { validatePassword } = require('../services/passwordPolicy');
 const { requireAuth, requireOperator, requireAdmin, signToken } = require('../middleware/authMiddleware');
 const { requireServerAccess } = accessService;
 
@@ -34,23 +37,89 @@ function getInstaller() {
 function init(app, io) {
   // --- Auth ---------------------------------------------------------------
 
-  app.post('/api/auth/login', (req, res) => {
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    limit: 10,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    skipSuccessfulRequests: true,
+    message: { error: 'Zu viele Login-Versuche. Bitte später erneut versuchen.' },
+  });
+  const setupLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000,
+    limit: 5,
+    standardHeaders: 'draft-8',
+    legacyHeaders: false,
+    message: { error: 'Zu viele Setup-Versuche. Bitte später erneut versuchen.' },
+  });
+  const dummyHash = '$2b$12$D0zdcBqLVaWqt801Rn1GHevqzPzL0PUritcD3MALogKrUDphf8teG';
+
+  app.get('/api/setup/status', (req, res) => {
+    res.json({ setupRequired: setupService.setupRequired() });
+  });
+
+  app.post('/api/setup/admin', setupLimiter, async (req, res) => {
+    const { username, password, passwordConfirm, setupToken } = req.body || {};
+    req.auditUsername = typeof username === 'string' ? username : null;
+    if (password !== passwordConfirm) return res.status(400).json({ error: 'Passwörter stimmen nicht überein.' });
+    try {
+      const user = await setupService.createInitialAdmin({ username, password, token: setupToken });
+      res.status(201).json({ token: signToken(user), user: { id: user.id, username: user.username, role: user.role } });
+    } catch (error) {
+      res.status(Number.isInteger(error.status) ? error.status : 500)
+        .json({ error: error.status ? error.message : 'Ersteinrichtung fehlgeschlagen.' });
+    }
+  });
+
+  app.post('/api/auth/login', loginLimiter, async (req, res) => {
     const { username, password } = req.body || {};
-    if (!username || !password) {
+    req.auditUsername = typeof username === 'string' ? username : null;
+    if (typeof username !== 'string' || typeof password !== 'string' || username.length > 64 || password.length > 128) {
       return res.status(400).json({ error: 'username and password are required' });
     }
     const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
-    if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    const valid = await bcrypt.compare(password, user ? user.password_hash : dummyHash);
+    if (!user || !user.active || !valid) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
     res.json({
       token: signToken(user),
-      user: { username: user.username, role: user.role },
+      user: { id: user.id, username: user.username, role: user.role, mustChangePassword: Boolean(user.must_change_password) },
     });
   });
 
   app.get('/api/auth/me', requireAuth, (req, res) => {
-    res.json({ user: { username: req.user.username, role: req.user.role } });
+    res.json({ user: { id: req.user.id, username: req.user.username, role: req.user.role, mustChangePassword: req.user.mustChangePassword } });
+  });
+
+  app.post('/api/auth/password', requireAuth, async (req, res) => {
+    const { currentPassword, newPassword, passwordConfirm } = req.body || {};
+    if (newPassword !== passwordConfirm) return res.status(400).json({ error: 'Passwörter stimmen nicht überein.' });
+    const policyError = validatePassword(newPassword);
+    if (policyError) return res.status(400).json({ error: policyError });
+    const row = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+    if (!row || !(await bcrypt.compare(String(currentPassword || ''), row.password_hash))) {
+      return res.status(403).json({ error: 'Aktuelles Passwort ist falsch.' });
+    }
+    const passwordHash = await bcrypt.hash(newPassword, 12);
+    const timestamp = Date.now();
+    db.prepare(
+      `UPDATE users SET password_hash = ?, token_version = token_version + 1,
+       must_change_password = 0, password_changed_at = ?, updated_at = ? WHERE id = ?`
+    ).run(passwordHash, timestamp, timestamp, row.id);
+    const updated = db.prepare('SELECT * FROM users WHERE id = ?').get(row.id);
+    io.in(`user:${row.id}`).disconnectSockets(true);
+    res.json({
+      token: signToken(updated),
+      user: { id: updated.id, username: updated.username, role: updated.role, mustChangePassword: false },
+    });
+  });
+
+  app.post('/api/auth/logout', requireAuth, (req, res) => {
+    db.prepare('UPDATE users SET token_version = token_version + 1, updated_at = ? WHERE id = ?')
+      .run(Date.now(), req.user.id);
+    io.in(`user:${req.user.id}`).disconnectSockets(true);
+    res.json({ ok: true });
   });
 
   // --- Servers ------------------------------------------------------------

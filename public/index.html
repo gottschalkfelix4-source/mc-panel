@@ -33,7 +33,15 @@
         <div id="login-error" class="hidden"></div>
         <button id="login-btn" class="btn btn-primary" type="submit">Einloggen</button>
       </form>
-      <p class="login-hint">Demo: admin / admin123 &nbsp;·&nbsp; player / player123</p>
+      <form id="setup-form" class="hidden">
+        <p class="login-hint">Erstelle den ersten Administrator. Den einmaligen Setup-Token findest du im Panel-Log.</p>
+        <input id="setup-user" class="input" placeholder="Admin-Benutzername" autocomplete="username" required>
+        <input id="setup-pass" class="input" type="password" placeholder="Passwort (mindestens 12 Zeichen)" autocomplete="new-password" required>
+        <input id="setup-pass-confirm" class="input" type="password" placeholder="Passwort wiederholen" autocomplete="new-password" required>
+        <input id="setup-token" class="input" type="password" placeholder="Setup-Token" autocomplete="off" required>
+        <div id="setup-error" class="hidden"></div>
+        <button id="setup-btn" class="btn btn-primary" type="submit">Admin erstellen</button>
+      </form>
     </div>
   </div>
 
@@ -58,6 +66,9 @@
       <a class="nav-item hidden" href="#/jobs" data-nav="jobs" id="nav-jobs">
         <span data-icon="ui:bolt"></span><span>Jobs</span>
       </a>
+      <a class="nav-item hidden" href="#/audit" data-nav="audit" id="nav-audit">
+        <span data-icon="ui:console"></span><span>Audit-Log</span>
+      </a>
       <a class="nav-item" href="#/users" data-nav="users" id="nav-users">
         <span data-icon="ui:players"></span><span>Benutzer</span>
       </a>
@@ -70,6 +81,7 @@
         <div class="user-row">
           <span class="pix" data-icon="block:creeper"></span>
           <span id="user-name"></span>
+          <button id="btn-password" class="icon-btn no-burst" title="Passwort ändern" data-icon-btn="ui:gear"></button>
           <button id="btn-logout" class="icon-btn no-burst" title="Ausloggen" data-icon-btn="ui:logout"></button>
         </div>
       </div>
@@ -95,19 +107,7 @@
 
   <script src="/socket.io/socket.io.js"></script>
   <script src="js/icons.js"></script>
-  <script>
-    /* fill static [data-icon] placeholders before the app boots */
-    (function () {
-      document.querySelectorAll('[data-icon]').forEach(function (el) {
-        var spec = el.getAttribute('data-icon');
-        var parts = spec.split(':');
-        el.innerHTML = parts[0] === 'block' ? Icons.get(parts[1]) : Icons.ui(parts[1]);
-      });
-      document.querySelectorAll('[data-icon-btn]').forEach(function (el) {
-        el.innerHTML = Icons.ui(el.getAttribute('data-icon-btn').split(':')[1]);
-      });
-    })();
-  </script>
+  <script src="js/static.js"></script>
   <script src="js/api.js"></script>
   <script src="js/management.js"></script>
   <script src="js/charts.js"></script>

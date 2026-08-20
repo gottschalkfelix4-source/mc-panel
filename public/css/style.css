@@ -239,8 +239,8 @@ input[type='range']::-webkit-slider-thumb {
 .login-title { font-size: 16px; color: var(--mc-lime); text-shadow: 2px 2px 0 rgba(0,0,0,0.6); }
 .login-sub { text-align: center; color: var(--text-dim); font-size: 13px; margin-top: -8px; }
 
-#login-form { display: flex; flex-direction: column; gap: 12px; }
-#login-error {
+#login-form, #setup-form { display: flex; flex-direction: column; gap: 12px; }
+#login-error, #setup-error {
   background: rgba(224, 48, 28, 0.15);
   border: 1px solid var(--mc-red);
   color: #ff9a8a;
@@ -694,6 +694,9 @@ input[type='range']::-webkit-slider-thumb {
 .jobs-table .job-xp { width: 80px; display: inline-block; vertical-align: middle; margin-right: 8px; }
 .jobs-table .badge-danger { color: #ff5340; border-color: rgba(255,83,64,0.45); }
 .jobs-loading, .jobs-empty { text-align: center; color: var(--text-faint); padding: 28px; }
+.audit-filters { display: grid; grid-template-columns: 1fr 1.5fr 1fr 0.7fr auto; gap: 10px; margin-bottom: 14px; padding: 12px; }
+.audit-more { display: flex; justify-content: center; margin-top: 14px; }
+@media (max-width: 900px) { .audit-filters { grid-template-columns: 1fr; } }
 .mp-progress-modal .modal-body { padding: 4px 0 8px; }
 .mp-progress-modal .wizard-hint { margin-bottom: 18px; }
 .mp-progress-modal .mp-progress-label { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 13px; }

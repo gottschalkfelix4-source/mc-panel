@@ -75,7 +75,6 @@ async function serverBackupState(serverId) {
 }
 
 function init(app, io) {
-  backupService.init(io);
   const uploadBody = express.raw({ type: 'application/octet-stream', limit: '512mb' });
   const parseUpload = (req, res, next) => uploadBody(req, res, (err) => {
     if (err) return sendError(res, err);

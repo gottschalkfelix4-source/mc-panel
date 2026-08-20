@@ -1951,6 +1951,57 @@
     return function () { clearInterval(timer); };
   }
 
+  async function auditLog(view) {
+    A().state.refreshView = A().route;
+    view.innerHTML =
+      '<div class="view-head"><div><h2>Audit-Log</h2><p class="hero-sub">Sicherheitsrelevante und verändernde Aktionen im Panel.</p></div></div>' +
+      '<div class="card audit-filters">' +
+        '<input class="input" id="audit-actor" placeholder="Benutzer">' +
+        '<input class="input" id="audit-event" placeholder="Ereignis, z. B. server.power">' +
+        '<select class="input" id="audit-outcome"><option value="">Alle Ergebnisse</option><option value="succeeded">Erfolgreich</option><option value="accepted">Angenommen</option><option value="failed">Fehlgeschlagen</option><option value="denied">Abgelehnt</option></select>' +
+        '<input class="input" id="audit-server" type="number" min="1" placeholder="Server-ID">' +
+        '<button class="btn btn-primary" id="audit-search">Filtern</button>' +
+      '</div>' +
+      '<div class="jobs-table-wrap"><table class="jobs-table"><thead><tr>' +
+        '<th>Zeit</th><th>Benutzer</th><th>Ereignis</th><th>Ergebnis</th><th>Server</th><th>HTTP</th><th>IP</th>' +
+      '</tr></thead><tbody id="audit-body"><tr><td colspan="7" class="jobs-loading">Lade Audit-Ereignisse …</td></tr></tbody></table></div>' +
+      '<div class="audit-more"><button class="btn btn-ghost hidden" id="audit-more">Ältere laden</button></div>';
+
+    var body = $('#audit-body', view);
+    var before = null;
+    async function load(append) {
+      try {
+        var response = await global.API.listAuditEvents({
+          limit: 100,
+          before: append ? before : null,
+          actor: $('#audit-actor', view).value.trim(),
+          eventType: $('#audit-event', view).value.trim(),
+          outcome: $('#audit-outcome', view).value,
+          serverId: $('#audit-server', view).value,
+        });
+        var events = response.events || [];
+        before = response.nextBefore;
+        var html = events.map(function (event) {
+          var outcomeClass = event.outcome === 'succeeded' || event.outcome === 'accepted' ? 'badge-setup' : 'badge-danger';
+          return '<tr><td>' + A().fmtDate(event.ts) + '</td>' +
+            '<td><b>' + esc(event.actorUsername || 'system') + '</b><br><small>' + esc(event.actorRole || '') + '</small></td>' +
+            '<td><code>' + esc(event.eventType) + '</code><br><small>' + esc(event.method || '') + ' ' + esc(event.path || '') + '</small></td>' +
+            '<td><span class="badge ' + outcomeClass + '">' + esc(event.outcome) + '</span></td>' +
+            '<td>' + esc(event.serverId || '—') + '</td><td>' + esc(event.statusCode || '—') + '</td><td>' + esc(event.ip || '—') + '</td></tr>';
+        }).join('');
+        if (append) body.insertAdjacentHTML('beforeend', html);
+        else body.innerHTML = html || '<tr><td colspan="7" class="jobs-empty">Keine Audit-Ereignisse gefunden.</td></tr>';
+        $('#audit-more', view).classList.toggle('hidden', events.length < 100);
+      } catch (error) {
+        if (error.status !== 401) body.innerHTML = '<tr><td colspan="7" class="jobs-empty">Audit-Log konnte nicht geladen werden.</td></tr>';
+      }
+    }
+    $('#audit-search', view).addEventListener('click', function () { before = null; load(false); });
+    $('#audit-more', view).addEventListener('click', function () { load(true); });
+    load(false);
+    return function () {};
+  }
+
   global.Views = {
     dashboard: dashboard,
     serversList: serversList,
@@ -1961,6 +2012,7 @@
     panelMode: panelMode,
     settings: settings,
     users: users,
-    jobsLog: jobsLog
+    jobsLog: jobsLog,
+    auditLog: auditLog
   };
 })(typeof window !== 'undefined' ? window : globalThis);

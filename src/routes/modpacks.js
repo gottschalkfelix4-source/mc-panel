@@ -73,7 +73,6 @@ function modToCamel(r) {
 }
 
 function init(app, io) {
-  updateService.init(io);
   const router = express.Router();
 
   // All modpack routes require auth

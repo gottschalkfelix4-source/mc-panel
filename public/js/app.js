@@ -462,6 +462,8 @@
     var isAdmin = App.state.user && App.state.user.role === 'admin';
     var jobsNav = $('#nav-jobs');
     if (jobsNav) jobsNav.classList.toggle('hidden', !isAdmin);
+    var auditNav = $('#nav-audit');
+    if (auditNav) auditNav.classList.toggle('hidden', !isAdmin);
   }
   App.syncSidebar = syncSidebar;
 
@@ -491,6 +493,9 @@
     } else if (parts[0] === 'jobs') {
       setNav('jobs');
       App.state.cleanup = await global.Views.jobsLog(view);
+    } else if (parts[0] === 'audit') {
+      setNav('audit');
+      App.state.cleanup = await global.Views.auditLog(view);
     } else if (parts[0] === 'settings') {
       setNav('settings');
       App.state.cleanup = await global.Views.settings(view);
@@ -512,7 +517,17 @@
     $('#app-shell').classList.add('hidden');
     $('#login-screen').classList.remove('hidden');
     var u = $('#login-user');
+    $('#login-form').classList.remove('hidden');
+    $('#setup-form').classList.add('hidden');
     if (u) setTimeout(function () { u.focus(); }, 50);
+  }
+
+  function showSetup() {
+    $('#app-shell').classList.add('hidden');
+    $('#login-screen').classList.remove('hidden');
+    $('#login-form').classList.add('hidden');
+    $('#setup-form').classList.remove('hidden');
+    setTimeout(function () { $('#setup-user').focus(); }, 50);
   }
 
   function showApp() {
@@ -533,7 +548,48 @@
     if (App.state.summaryTimer) clearInterval(App.state.summaryTimer);
     App.state.summaryTimer = setInterval(refreshSummary, 5000);
     route();
+    if (App.state.user && App.state.user.mustChangePassword) {
+      setTimeout(function () { openPasswordModal(true); }, 100);
+    }
   }
+
+  function openPasswordModal(forced) {
+    var box = document.createElement('div');
+    box.innerHTML = '<div class="modal-head"><h3 class="modal-title">Passwort ändern</h3></div>' +
+      '<div class="modal-body">' +
+      (forced ? '<p class="confirm-text">Vor der weiteren Nutzung muss das temporäre Passwort geändert werden.</p>' : '') +
+      '<label class="field"><span>Aktuelles Passwort</span><input class="input" name="current" type="password" autocomplete="current-password"></label>' +
+      '<label class="field"><span>Neues Passwort</span><input class="input" name="next" type="password" autocomplete="new-password"></label>' +
+      '<label class="field"><span>Passwort wiederholen</span><input class="input" name="confirm" type="password" autocomplete="new-password"></label></div>' +
+      '<div class="modal-foot">' + (forced ? '' : '<button class="btn btn-ghost" data-act="cancel">Abbrechen</button>') +
+      '<button class="btn btn-primary" data-act="save">Passwort ändern</button></div>';
+    var ov = openModal(box, { dismissible: !forced });
+    box.addEventListener('click', async function (ev) {
+      var action = ev.target.getAttribute && ev.target.getAttribute('data-act');
+      if (action === 'cancel') return closeModal(ov);
+      if (action !== 'save') return;
+      ev.target.disabled = true;
+      try {
+        var result = await global.API.changePassword({
+          currentPassword: $('[name="current"]', box).value,
+          newPassword: $('[name="next"]', box).value,
+          passwordConfirm: $('[name="confirm"]', box).value,
+        });
+        global.API.setToken(result.token);
+        App.state.user = result.user;
+        closeModal(ov);
+        if (App.state.socket) App.state.socket.disconnect();
+        App.state.socket = null;
+        if ($('#app-shell').classList.contains('hidden')) showApp();
+        else connectSocket();
+        toast('Passwort wurde geändert. Andere Sitzungen wurden beendet.', 'ok');
+      } catch (error) {
+        ev.target.disabled = false;
+        if (error.status !== 401) toast(error.message || 'Passwort konnte nicht geändert werden.', 'err');
+      }
+    });
+  }
+  App.openPasswordModal = openPasswordModal;
 
   function onUnauthorized() {
     App.state.user = null;
@@ -544,7 +600,8 @@
   }
   App.onUnauthorized = onUnauthorized;
 
-  function logout() {
+  async function logout() {
+    try { await global.API.logout(); } catch (error) { /* local logout must still work */ }
     global.API.setToken(null);
     App.state.user = null;
     if (App.state.summaryTimer) { clearInterval(App.state.summaryTimer); App.state.summaryTimer = null; }
@@ -568,7 +625,8 @@
         var res = await global.API.login($('#login-user').value.trim(), $('#login-pass').value);
         global.API.setToken(res.token);
         App.state.user = res.user;
-        showApp();
+        if (res.user.mustChangePassword) openPasswordModal(true);
+        else showApp();
       } catch (e) {
         err.textContent = e.status === 401 || e.status === 400
           ? 'Falscher Benutzername oder Passwort.'
@@ -582,6 +640,30 @@
         btn.textContent = 'Einloggen';
       }
     });
+    $('#setup-form').addEventListener('submit', async function (ev) {
+      ev.preventDefault();
+      var btn = $('#setup-btn');
+      var err = $('#setup-error');
+      err.classList.add('hidden');
+      btn.disabled = true;
+      try {
+        var res = await global.API.setupAdmin({
+          username: $('#setup-user').value.trim(),
+          password: $('#setup-pass').value,
+          passwordConfirm: $('#setup-pass-confirm').value,
+          setupToken: $('#setup-token').value,
+        });
+        global.API.setToken(res.token);
+        App.state.user = res.user;
+        showApp();
+      } catch (error) {
+        err.textContent = error.message || 'Ersteinrichtung fehlgeschlagen.';
+        err.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+      }
+    });
+    $('#btn-password').addEventListener('click', function () { openPasswordModal(false); });
     $('#btn-logout').addEventListener('click', logout);
   }
 
@@ -683,12 +765,28 @@
     startBg();
     window.addEventListener('hashchange', route);
 
+    try {
+      var setup = await global.API.setupStatus();
+      if (setup.setupRequired) {
+        global.API.setToken(null);
+        showSetup();
+        return;
+      }
+    } catch (error) {
+      showLogin();
+      toast('Backend nicht erreichbar.', 'err');
+      return;
+    }
+
     var tok = global.API.getToken();
     if (tok) {
       try {
         var me = await global.API.me();
         App.state.user = me.user;
-        showApp();
+        if (me.user.mustChangePassword) {
+          showLogin();
+          openPasswordModal(true);
+        } else showApp();
         return;
       } catch (e) {
         if (e.status === 401) return showLogin(); // token invalid -> handled already

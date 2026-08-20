@@ -73,10 +73,14 @@
     setToken: setToken,
 
     /* ---- Auth ---- */
+    setupStatus: function () { return request('/api/setup/status'); },
+    setupAdmin: function (payload) { return request('/api/setup/admin', { method: 'POST', body: payload }); },
     login: function (username, password) {
       return request('/api/auth/login', { method: 'POST', body: { username: username, password: password } });
     },
     me: function () { return request('/api/auth/me'); },
+    changePassword: function (payload) { return request('/api/auth/password', { method: 'POST', body: payload }); },
+    logout: function () { return request('/api/auth/logout', { method: 'POST' }); },
 
     /* ---- Servers ---- */
     listServers: function () { return request('/api/servers'); },
@@ -84,6 +88,7 @@
     adminListServers: function () { return request('/api/admin/servers'); },
     listJobs: function () { return request('/api/admin/jobs'); },
     cancelJob: function (jobId) { return request('/api/admin/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST' }); },
+    listAuditEvents: function (params) { return request('/api/admin/audit-events' + qs(params || {})); },
     createServer: function (payload) { return request('/api/servers', { method: 'POST', body: payload }); },
     deleteServer: function (id) { return request('/api/servers/' + encodeURIComponent(id), { method: 'DELETE' }); },
     power: function (id, action) { // action: 'start' | 'stop' | 'restart'
@@ -223,6 +228,9 @@
     createUser: function (payload) { return request('/api/users', { method: 'POST', body: payload }); },
     updateUser: function (id, payload) {
       return request('/api/users/' + encodeURIComponent(id), { method: 'PATCH', body: payload });
+    },
+    resetUserPassword: function (id, payload) {
+      return request('/api/users/' + encodeURIComponent(id) + '/password-reset', { method: 'POST', body: payload });
     },
     deleteUser: function (id) {
       return request('/api/users/' + encodeURIComponent(id), { method: 'DELETE' });

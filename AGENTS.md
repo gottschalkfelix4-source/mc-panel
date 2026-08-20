@@ -10,8 +10,8 @@ Vanilla-JS-Frontend ohne Build-Schritt. CommonJS (`"type": "commonjs"`).
   `panel-servers` (Server/Modpacks), `panel-backups` (ZIP-Backups).
 - `npm start` — lokal, Port aus `.env` (Default 3000)
 - `npm run dev` — nodemon
-- Kein Test-Framework vorhanden. Smoke-Tests manuell: `/health`,
-  Login via `POST /api/auth/login`, dann Endpunkte mit Bearer-Token prüfen.
+- `npm run check` — Syntaxprüfung aller First-Party-JavaScript-Dateien.
+- `npm test` — Node-Test-Suite mit isolierter temporärer SQLite-Datenbank.
 
 ## Docker
 - Image: `node:24-trixie-slim` (braucht Node ≥22.5 für `node:sqlite`; **trixie** wegen
@@ -57,6 +57,12 @@ Vanilla-JS-Frontend ohne Build-Schritt. CommonJS (`"type": "commonjs"`).
   Schema nur in `src/services/database.js`. Timestamps als Integer (`Date.now()`).
 - **API:** alle Endpunkte unter `/api/*`, JSON, camelCase in Responses (snake_case in DB).
   Auth: JWT Bearer via `requireAuth` aus `src/middleware/authMiddleware.js`.
+- **Security:** Frische Datenbanken erhalten keine Default-Benutzer. Der erste Admin wird
+  über `/api/setup/admin` mit dem einmaligen Setup-Token aus dem Prozesslog erstellt.
+  JWTs enthalten User-ID + `token_version`; Rolle/Aktivstatus werden bei jeder Anfrage
+  aus SQLite geladen. Bekannte Demo-Passwörter erzwingen beim nächsten Login einen Wechsel.
+- **Audit:** Mutierende API-Aufrufe landen redigiert in `audit_events`; niemals Passwörter,
+  Tokens, API-Keys, Dateiinhalte oder vollständige Konsolenbefehle persistieren.
 - **Rollen:** `admin` (alles inkl. Benutzer/Secrets), `operator` (Servermutationen),
   `viewer` (zugewiesene Server Power-Aktionen + Konsolenbefehle + Modpacks
   installieren, sonst read-only). Legacy-Rolle `player` wird zu `viewer` migriert.
