@@ -1,9 +1,8 @@
 // Metrics service: collects + persists per-server metrics on an interval,
 // exposes history (downsampled) and a cluster summary.
-// Simulation mode: synthetic random walk. Real mode: pidusage on the JVM pid.
+// Simulation mode: synthetic random walk. Real mode: Docker container stats.
 'use strict';
 
-const pidusage = require('pidusage');
 const os = require('os');
 const fs = require('fs');
 const { db, now } = require('./database');
@@ -18,6 +17,7 @@ const HISTORY_MAX_POINTS = 360;
 let io = null;
 let tickTimer = null;
 let pruneTimer = null;
+let realTick = null;
 
 // serverId -> random-walk state (simulation mode)
 const walk = new Map();
@@ -78,17 +78,13 @@ function computeMetric(server, st, ts) {
   };
 }
 
-// Real mode: measure the actual JVM process via pidusage.
+// Real mode: measure the Minecraft container through Docker stats.
 async function computeRealMetric(server, ts) {
   const info = processManager.getRuntimeInfo(server.id);
-  if (!info || info.pid == null) return null; // no live process -> skip tick
+  if (!info) return null;
 
-  let stats;
-  try {
-    stats = await pidusage(info.pid);
-  } catch {
-    return null; // process gone between status check and measurement
-  }
+  const stats = await processManager.sample(server.id);
+  if (!stats) return null;
 
   // Freshly starting servers ramp up like in simulation.
   let ramp = 1;
@@ -99,9 +95,8 @@ async function computeRealMetric(server, ts) {
     startingSince.delete(server.id);
   }
 
-  const cpuCores = Math.max(1, Number(server.cpu_cores) || 1);
-  const cpu = round1(clamp(stats.cpu / cpuCores, 0, 100) * ramp);
-  const ram = round1(clamp(stats.memory / 1048576, 0, server.ram_mb) * ramp);
+  const cpu = round1(clamp(stats.cpu, 0, 100) * ramp);
+  const ram = round1(clamp(stats.memoryBytes / 1048576, 0, server.ram_mb) * ramp);
 
   // TPS: parsed from the server console on Paper; otherwise assume 20 with a
   // cpu-based dip.
@@ -124,15 +119,19 @@ async function computeRealMetric(server, ts) {
 
 async function tickReal(servers, insert, ts) {
   for (const server of servers) {
-    const m = await computeRealMetric(server, ts);
-    if (!m) continue;
     try {
-      insert.run(m.serverId, m.ts, m.cpu, m.ram, m.tps, m.playersOnline, m.playersMax);
+      const m = await computeRealMetric(server, ts);
+      if (!m) continue;
+      try {
+        insert.run(m.serverId, m.ts, m.cpu, m.ram, m.tps, m.playersOnline, m.playersMax);
+      } catch {
+        // Server deleted mid-tick; skip persistence but still emit.
+      }
+      lastMetrics.set(m.serverId, m);
+      if (io) io.to(`server:${m.serverId}`).emit('metrics:tick', m);
     } catch {
-      // Server deleted mid-tick; skip persistence but still emit.
+      // One unavailable container must not suppress metrics for other servers.
     }
-    lastMetrics.set(m.serverId, m);
-    if (io) io.to(`server:${m.serverId}`).emit('metrics:tick', m);
   }
 }
 
@@ -148,7 +147,11 @@ function tickOnce() {
   );
 
   if (processManager.getMode() === 'real') {
-    tickReal(servers, insert, ts).catch(() => {});
+    if (!realTick) {
+      realTick = tickReal(servers, insert, ts).finally(() => {
+        realTick = null;
+      });
+    }
     return;
   }
 

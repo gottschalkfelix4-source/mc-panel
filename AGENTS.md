@@ -14,30 +14,34 @@ Vanilla-JS-Frontend ohne Build-Schritt. CommonJS (`"type": "commonjs"`).
 - `npm test` — Node-Test-Suite mit isolierter temporärer SQLite-Datenbank.
 
 ## Docker
-- Image: `node:24-trixie-slim` (braucht Node ≥22.5 für `node:sqlite`; **trixie** wegen
-  OpenJDK 21 — Bookworm hat nur 17, zu alt für MC 1.20.5+), non-root (`USER node`),
+- Image: `node:24-trixie-slim` (braucht Node ≥22.5 für `node:sqlite`) mit
+  OpenJDK 17/21/25 unter architektur-neutralen `/opt/java/*`-Pfaden, non-root (`USER node`),
   Healthcheck via `fetch('/health')`. `sqlite3` wurde aus `package.json` entfernt (ungenutzt).
 - `.dockerignore` hält `node_modules`, DB und Laufzeitdaten aus dem Build-Kontext.
+- Der Panel-Container greift über `/var/run/docker.sock` auf die lokale Docker Engine zu.
+  Jeder echte Minecraft-Server läuft als eigener, gelabelter Container mit eigenem
+  Port, CPU-/RAM-cgroup-Limit und ausschließlich seinem Server-Unterverzeichnis.
+  Auf Linux muss `DOCKER_GID` der Gruppen-ID des Docker-Sockets entsprechen.
 
 ## Echte Server (Real-Modus)
-- `SIMULATION_MODE=false` (Docker-Default) + Java vorhanden → echte Java-Prozesse.
-  Auto-Fallback auf Simulation, wenn kein `java`-Binary gefunden wird (z. B. lokal).
+- `SIMULATION_MODE=false` (Docker-Default) → isolierte Docker-Container; dafür sind
+  Docker-Socket und Compose-Mount-Metadaten erforderlich. Lokal explizit
+  `SIMULATION_MODE=true` verwenden. Unterstützte Minecraft-Versionen beginnen bei 1.17.
 - `installerService.js`: lädt Server-JARs/Installer (Vanilla=Mojang manifest,
   Paper=fill.papermc.io **v3** (v2 ist 410 Gone!), Fabric=meta.fabricmc.net,
   Forge=promotions_slim.json + Maven-Installer, NeoForge=maven-metadata.xml; Achtung:
   neue MC-Versionen haben kein `1.`-Präfix mehr, z. B. `26.2`), schreibt
   `eula.txt`/`server.properties`/`run.json` in `servers/<id>/`, nutzt die
   `modpack_jobs`-Tabelle (provider='installer') für Fortschritt.
-- `processManager.js`: spawn `java -Xmx<ram>M … nogui`, Boot-Erkennung via
+- `processManager.js`: Docker-Container mit `java -Xmx<ram>M … nogui`, Boot-Erkennung via
   `Done (Xs)!`, Stopp via stdin `stop` (SIGTERM@45s, SIGKILL@55s), `sendCommand`
   für echte Konsolen-Befehle, 20s-Poller parst `list` (Spieler) / `tps` (nur Paper).
-  Beim Panel-/Containerstart werden persistierte online/starting/stopping-Status auf
-  offline korrigiert, da Child-Prozesse einen Container-Neustart nicht überleben.
+  Beim Panelstart werden gelabelte Minecraft-Container erkannt, Log-/Konsolenstreams
+  neu verbunden und ihre Status übernommen; Panel-Neustarts stoppen Server nicht.
 - Ressourcen: `servers.ram_mb` + `servers.cpu_cores`; nur Admin darf offline ändern.
-  JVM erhält `-XX:ActiveProcessorCount`, Linux-Prozess zusätzlich CPU-Affinität via
-  `/usr/bin/taskset` auf die ersten erlaubten Container-CPUs. CPU-Metrik wird auf die
-  zugewiesenen Kerne normalisiert.
-- `metricsService.js`: Real-Modus = `pidusage(pid)` für CPU/RAM.
+  Docker-cgroups setzen RAM-/CPU-Limits, die JVM erhält zusätzlich
+  `-XX:ActiveProcessorCount`. CPU-Metrik wird auf die zugewiesenen Kerne normalisiert.
+- `metricsService.js`: Real-Modus liest CPU/RAM über Docker Stats.
 - Server ohne Installation → API 409 `NOT_INSTALLED` → Frontend öffnet den Wizard
   (5 Schritte: Modpack → Loader → Version → EULA → Installation).
 - **Modpacks werden echt angewendet** (`modpackService.applyPack`): Modrinth =

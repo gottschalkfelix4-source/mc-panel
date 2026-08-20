@@ -8,6 +8,7 @@ const modrinth = require('../services/modrinthService');
 const curseforge = require('../services/curseforgeService');
 const modpackService = require('../services/modpackService');
 const updateService = require('../services/updateService');
+const { withServerOperation } = require('../services/serverOperationLock');
 const accessService = require('../services/accessService');
 const { requireServerAccess } = accessService;
 
@@ -120,9 +121,12 @@ function init(app, io) {
     if (!Number.isInteger(serverId)) {
       return res.status(400).json({ error: 'Invalid server id' });
     }
-    const server = db.prepare('SELECT id, loader, version FROM servers WHERE id = ?').get(serverId);
+    const server = db.prepare('SELECT id, loader, version, status FROM servers WHERE id = ?').get(serverId);
     if (!server) {
       return res.status(404).json({ error: 'Server not found' });
+    }
+    if (server.status !== 'offline') {
+      return res.status(409).json({ error: 'Server muss für die Modpack-Installation offline sein' });
     }
     const { provider, modpackId, versionId, name, iconUrl } = req.body || {};
     if (!VALID_PROVIDERS.includes(provider)) return invalidProvider(res, provider);
@@ -163,6 +167,10 @@ function init(app, io) {
       }
     }
 
+    const current = db.prepare('SELECT status FROM servers WHERE id = ?').get(serverId);
+    if (!current || current.status !== 'offline') {
+      return res.status(409).json({ error: 'Server muss für die Modpack-Installation offline sein' });
+    }
     const jobId = modpackService.createJob({
       serverId,
       provider,
@@ -174,8 +182,8 @@ function init(app, io) {
 
     // Kick off the install pipeline without blocking the response
     setImmediate(() => {
-      modpackService
-        .runJob(io, jobId, { serverId, provider, modpackId: String(modpackId), versionId, name, iconUrl })
+      withServerOperation(serverId, () => modpackService
+        .runJob(io, jobId, { serverId, provider, modpackId: String(modpackId), versionId, name, iconUrl }))
         .catch((err) => console.error(`modpack job ${jobId} crashed:`, err));
     });
 

@@ -211,14 +211,18 @@ function init(app, io) {
     }
   });
 
-  app.delete('/api/servers/:id', requireAuth, requireServerAccess, requireAdmin, (req, res) => {
+  app.delete('/api/servers/:id', requireAuth, requireServerAccess, requireAdmin, async (req, res) => {
     const id = parseId(req.params.id);
     const server = id && serverService.getServer(id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
 
-    processManager.cleanup(id); // stop simulated process immediately (no async DB writes after delete)
-    serverService.deleteServer(id);
-    res.json({ ok: true, deleted: id });
+    try {
+      await processManager.cleanup(id);
+      serverService.deleteServer(id);
+      res.json({ ok: true, deleted: id });
+    } catch (error) {
+      res.status(409).json({ error: `Server-Container konnte nicht entfernt werden: ${error.message}` });
+    }
   });
 
   // --- Power actions --------------------------------------------------------
@@ -229,7 +233,7 @@ function init(app, io) {
     ).get(serverId);
   }
 
-  const powerAction = (action) => (req, res) => {
+  const powerAction = (action) => async (req, res) => {
     const id = parseId(req.params.id);
     const server = id && serverService.getServer(id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -240,14 +244,14 @@ function init(app, io) {
       });
     }
     try {
-      const status = processManager[action](id);
+      const status = await processManager[action](id);
       res.json({ status });
     } catch (err) {
       res.status(409).json({ error: err.message });
     }
   };
 
-  app.post('/api/servers/:id/start', requireAuth, requireServerAccess, (req, res) => {
+  app.post('/api/servers/:id/start', requireAuth, requireServerAccess, async (req, res) => {
     const id = parseId(req.params.id);
     const server = id && serverService.getServer(id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -262,7 +266,7 @@ function init(app, io) {
       return res.status(409).json({ error: 'Server ist nicht installiert', code: 'NOT_INSTALLED' });
     }
     try {
-      const status = processManager.start(id);
+      const status = await processManager.start(id);
       res.json({ status });
     } catch (err) {
       res.status(409).json({ error: err.message });
@@ -313,6 +317,7 @@ function init(app, io) {
     const id = parseId(req.params.id);
     const server = id && serverService.getServer(id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
+    if (server.status !== 'offline') return res.status(409).json({ error: 'Server muss für die Installation offline sein' });
     const { version, eulaAccepted, wipe, modpack } = req.body || {};
     if (eulaAccepted !== true) {
       return res.status(400).json({ error: 'EULA muss akzeptiert werden' });
@@ -355,12 +360,6 @@ function init(app, io) {
       if (!mcVersion) {
         return res.status(400).json({ error: 'Modpack-Version konnte nicht aufgelöst werden' });
       }
-      // Reflect the pack's loader/version on the server row before the job starts.
-      db.prepare('UPDATE servers SET loader = ?, version = ? WHERE id = ?').run(
-        loader,
-        mcVersion,
-        id
-      );
       modpackArg = {
         provider: modpack.provider,
         modpackId: String(modpack.modpackId),
@@ -372,6 +371,10 @@ function init(app, io) {
       return res.status(400).json({ error: 'version is required' });
     }
 
+    const current = serverService.getServer(id);
+    if (!current || current.status !== 'offline') {
+      return res.status(409).json({ error: 'Server muss für die Installation offline sein' });
+    }
     const jobId = installer.createInstallJob(io, {
       serverId: id,
       loader,
@@ -383,7 +386,7 @@ function init(app, io) {
     res.status(202).json({ jobId });
   });
 
-  app.post('/api/servers/:id/command', requireAuth, requireServerAccess, (req, res) => {
+  app.post('/api/servers/:id/command', requireAuth, requireServerAccess, async (req, res) => {
     const id = parseId(req.params.id);
     const server = id && serverService.getServer(id);
     if (!server) return res.status(404).json({ error: 'Server not found' });
@@ -392,7 +395,11 @@ function init(app, io) {
     if (server.status !== 'online') {
       return res.status(409).json({ error: 'Server ist nicht online' });
     }
-    if (!processManager.sendCommand(id, command)) {
+    try {
+      if (!(await processManager.sendCommand(id, command))) {
+        return res.status(500).json({ error: 'Befehl konnte nicht an den Server gesendet werden' });
+      }
+    } catch {
       return res.status(500).json({ error: 'Befehl konnte nicht an den Server gesendet werden' });
     }
     res.json({ ok: true });

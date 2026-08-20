@@ -1,6 +1,5 @@
-// Process manager: runs real Minecraft server JVMs, with a simulation fallback.
-// Mode: 'real' when SIMULATION_MODE !== 'true' AND a java binary is available,
-// otherwise 'simulation' (staged boot logs, ambient chatter — no processes).
+// Process manager: runs isolated Minecraft Docker containers or the explicit
+// simulation mode (staged boot logs, ambient chatter, no processes).
 'use strict';
 
 const { spawn } = require('child_process');
@@ -8,6 +7,9 @@ const fs = require('fs');
 const path = require('path');
 const { db, now } = require('./database');
 const serverService = require('./serverService');
+const { createDockerRuntime } = require('./dockerRuntimeService');
+const { javaBinaryForVersion } = require('./javaRuntime');
+const { withServerOperation } = require('./serverOperationLock');
 const { pick, randInt } = require('../utils/helpers');
 
 const SERVERS_DIR = process.env.SERVERS_DIR || './servers';
@@ -20,6 +22,7 @@ let mode = 'simulation';
 //                   restartPending, exited, killTimers: Timeout[] }
 const running = new Map();
 let pollTimer = null;
+let dockerRuntime = null;
 
 const PLAYER_NAMES = ['Steve', 'Alex', 'Herobrine', 'Notch', 'CreeperHunter', 'DiamondDave', 'Endergirl', 'CraftyMiner', 'BlockBuilder', 'RedstoneRon'];
 
@@ -32,51 +35,70 @@ function getInstaller() {
   }
 }
 
-// --- Mode resolution ---------------------------------------------------------
-
-function probeJava() {
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (ok) => {
-      if (!settled) {
-        settled = true;
-        resolve(ok);
-      }
-    };
-    let child;
-    try {
-      child = spawn('java', ['-version'], { stdio: 'ignore' });
-    } catch {
-      return done(false);
-    }
-    child.on('error', () => done(false));
-    child.on('exit', (code) => done(code === 0));
-  });
+function dockerState(statusValue = 'starting') {
+  return {
+    status: statusValue,
+    playersOnline: 0,
+    playersMax: 20,
+    playerNames: [],
+    tps: 20,
+    stopping: false,
+    exited: false,
+  };
 }
 
-function init(ioInstance) {
+async function init(ioInstance) {
   io = ioInstance;
-  // Child processes cannot survive a panel/container restart. Reconcile stale
-  // persisted states before accepting power or backup operations.
-  const stale = db.prepare("SELECT id FROM servers WHERE status != 'offline'").all();
-  for (const server of stale) {
-    applyStatus(server.id, null, 'offline');
-    log(server.id, 'Panel neu gestartet: Kein verwalteter Server-Prozess gefunden, Status auf offline gesetzt.');
-  }
   startPolling();
   if (process.env.SIMULATION_MODE === 'true') {
     mode = 'simulation';
+    const stale = db.prepare("SELECT id FROM servers WHERE status != 'offline'").all();
+    for (const server of stale) applyStatus(server.id, null, 'offline');
     return;
   }
-  // Probe java once; real mode only when the binary actually runs.
-  probeJava().then((ok) => {
-    mode = ok ? 'real' : 'simulation';
-    if (ok) {
-      console.log('[processManager] Real mode: java available, servers run as real processes.');
-    } else {
-      console.warn('[processManager] SIMULATION_MODE=false but no java binary found — falling back to simulation mode.');
+
+  mode = 'real';
+  dockerRuntime = createDockerRuntime();
+  dockerRuntime.on('line', (serverId, line) => {
+    let state = running.get(serverId);
+    if (!state) {
+      state = dockerState('starting');
+      running.set(serverId, state);
     }
+    handleLine(serverId, state, line);
   });
+  dockerRuntime.on('state', (serverId, nextStatus, details) => {
+    if (!serverService.getServer(serverId)) return;
+    let state = running.get(serverId);
+    if (nextStatus === 'online' || nextStatus === 'starting') {
+      if (!state) {
+        state = dockerState(nextStatus);
+        running.set(serverId, state);
+      }
+      state.exited = false;
+      state.stopping = false;
+      applyStatus(serverId, state, nextStatus);
+      return;
+    }
+    if (state && !state.stopping && state.status !== 'offline') {
+      const suffix = details && details.OOMKilled ? ' (Out of memory)' : '';
+      log(serverId, `Docker-Container wurde unerwartet beendet${suffix}.`);
+    }
+    applyStatus(serverId, state, 'offline');
+    running.delete(serverId);
+  });
+  dockerRuntime.on('error', (error) => console.error('[dockerRuntime]', error.message));
+
+  const found = await dockerRuntime.init();
+  const managedIds = new Set(found.map((entry) => entry.serverId));
+  const stale = db.prepare("SELECT id FROM servers WHERE status != 'offline'").all();
+  for (const server of stale) {
+    if (!managedIds.has(server.id)) {
+      applyStatus(server.id, null, 'offline');
+      log(server.id, 'Kein Docker-Container gefunden; Status auf offline korrigiert.');
+    }
+  }
+  console.log(`[processManager] Docker mode: ${found.length} verwaltete Container erkannt.`);
 }
 
 function getMode() {
@@ -285,7 +307,7 @@ function handleLine(serverId, state, rawLine) {
   }
 }
 
-// Split a stream into lines and feed each through handleLine.
+// Legacy direct-process helpers remain isolated from Docker mode.
 function attachLinePipe(serverId, state, stream) {
   let buf = '';
   stream.on('data', (chunk) => {
@@ -325,6 +347,100 @@ function buildJavaArgs(server, runConfig) {
     args.push('@user_jvm_args.txt', `@${runConfig.argsFile}`, 'nogui');
   }
   return args;
+}
+
+function validateRunConfig(runConfig, serverId) {
+  if (!runConfig || !['jar', 'args'].includes(runConfig.type)) throw new Error('Ungültige run.json-Konfiguration');
+  const workDir = path.resolve(SERVERS_DIR, String(serverId));
+  const key = runConfig.type === 'jar' ? 'jar' : 'argsFile';
+  const value = runConfig[key];
+  if (typeof value !== 'string' || !value || value.includes('\0') || path.isAbsolute(value)) {
+    throw new Error(`Ungültiger Pfad in run.json: ${key}`);
+  }
+  const normalized = path.normalize(value);
+  if (normalized === '..' || normalized.startsWith(`..${path.sep}`)) {
+    throw new Error(`Pfad verlässt Serververzeichnis: ${key}`);
+  }
+  const target = path.resolve(workDir, normalized);
+  if (target !== workDir && !target.startsWith(`${workDir}${path.sep}`)) throw new Error(`Pfad verlässt Serververzeichnis: ${key}`);
+  if (!fs.existsSync(target)) throw new Error(`Startdatei fehlt: ${value}`);
+  return { ...runConfig, workDir };
+}
+
+async function startDocker(serverId) {
+  const existing = running.get(serverId);
+  if (existing && ['starting', 'online'].includes(existing.status)) return existing.status;
+  const server = serverService.getServer(serverId);
+  if (!server) throw new Error(`Server ${serverId} not found`);
+  const installer = getInstaller();
+  const runConfig = validateRunConfig(installer && installer.getRunConfig(serverId), serverId);
+  const state = dockerState('starting');
+  running.set(serverId, state);
+  applyStatus(serverId, state, 'starting');
+  log(serverId, `Docker-Start: ${server.cpuCores} CPU / ${server.ramMb} MB JVM-RAM / Port ${server.port}`);
+  try {
+    await dockerRuntime.start({
+      server,
+      javaBinary: javaBinaryForVersion(server.version),
+      javaArgs: buildJavaArgs(server, runConfig),
+    });
+    return 'starting';
+  } catch (error) {
+    applyStatus(serverId, state, 'offline');
+    running.delete(serverId);
+    log(serverId, `Docker-Start fehlgeschlagen: ${error.message}`);
+    throw error;
+  }
+}
+
+async function stopDocker(serverId) {
+  const state = running.get(serverId);
+  if (state && state.status === 'stopping') return 'stopping';
+  const previousStatus = state && state.status;
+  if (state) {
+    state.stopping = true;
+    applyStatus(serverId, state, 'stopping');
+  }
+  log(serverId, 'Stoppe Docker-Container ...');
+  try {
+    await dockerRuntime.stop(serverId);
+    applyStatus(serverId, state, 'offline');
+    running.delete(serverId);
+    return 'offline';
+  } catch (error) {
+    if (state) {
+      state.stopping = false;
+      applyStatus(serverId, state, previousStatus || 'online');
+    }
+    log(serverId, `Docker-Stopp fehlgeschlagen: ${error.message}`);
+    throw error;
+  }
+}
+
+async function restartDocker(serverId) {
+  const state = running.get(serverId);
+  if (!state || state.status === 'offline') return startDocker(serverId);
+  const previousStatus = state.status;
+  state.stopping = true;
+  applyStatus(serverId, state, 'stopping');
+  try {
+    await dockerRuntime.restart(serverId);
+    state.stopping = false;
+    state.exited = false;
+    applyStatus(serverId, state, 'starting');
+    return 'starting';
+  } catch (error) {
+    state.stopping = false;
+    applyStatus(serverId, state, previousStatus);
+    log(serverId, `Docker-Neustart fehlgeschlagen: ${error.message}`);
+    throw error;
+  }
+}
+
+async function cleanupDocker(serverId) {
+  await dockerRuntime.remove(serverId);
+  running.delete(serverId);
+  fs.rmSync(path.join(SERVERS_DIR, String(serverId)), { recursive: true, force: true });
 }
 
 function parseCpuList(value) {
@@ -513,16 +629,10 @@ function startPolling() {
   pollTimer = setInterval(() => {
     if (mode !== 'real') return;
     for (const [id, state] of running) {
-      if (!state.proc || state.exited || state.status !== 'online') continue;
-      try {
-        state.proc.stdin.write('list\n');
-        const server = serverService.getServer(id);
-        if (server && server.loader === 'paper') {
-          state.proc.stdin.write('tps\n');
-        }
-      } catch {
-        // stdin closed; exit handler will clean up
-      }
+      if (state.exited || state.status !== 'online') continue;
+      sendCommand(id, 'list').catch(() => {});
+      const server = serverService.getServer(id);
+      if (server && server.loader === 'paper') sendCommand(id, 'tps').catch(() => {});
     }
   }, PLAYER_POLL_MS);
 }
@@ -530,19 +640,19 @@ function startPolling() {
 // --- Public API (mode dispatch) ---------------------------------------------------
 
 function start(serverId) {
-  return mode === 'real' ? startReal(serverId) : startSim(serverId);
+  return withServerOperation(serverId, () => mode === 'real' ? startDocker(serverId) : startSim(serverId));
 }
 
 function stop(serverId) {
-  return mode === 'real' ? stopReal(serverId) : stopSim(serverId);
+  return withServerOperation(serverId, () => mode === 'real' ? stopDocker(serverId) : stopSim(serverId));
 }
 
 function restart(serverId) {
-  return mode === 'real' ? restartReal(serverId) : restartSim(serverId);
+  return withServerOperation(serverId, () => mode === 'real' ? restartDocker(serverId) : restartSim(serverId));
 }
 
 // Send a console command to a running server. Sanitized, real mode only.
-function sendCommand(serverId, command) {
+async function sendCommand(serverId, command) {
   const cmd = String(command == null ? '' : command)
     .replace(/[\x00-\x1f\x7f]/g, '') // strip control chars (incl. newlines)
     .trim()
@@ -556,21 +666,24 @@ function sendCommand(serverId, command) {
     log(serverId, `> ${cmd}`);
     return true;
   }
-  if (!state || !state.proc || state.exited || state.status !== 'online') return false;
-  try {
-    state.proc.stdin.write(cmd + '\n');
-    return true;
-  } catch {
-    return false;
+  if (!state || state.exited || state.status !== 'online') return false;
+  if (cmd.toLowerCase() === 'stop') {
+    try {
+      await stop(serverId);
+      return true;
+    } catch {
+      return false;
+    }
   }
+  try { return await dockerRuntime.command(serverId, cmd); } catch { return false; }
 }
 
 // Runtime info for metricsService; null when no live real process exists.
 function getRuntimeInfo(serverId) {
   const state = running.get(serverId);
-  if (!state || !state.proc || state.exited) return null;
+  if (!state || state.exited || mode !== 'real') return null;
   return {
-    pid: state.proc.pid,
+    pid: null,
     playersOnline: state.playersOnline,
     playersMax: state.playersMax,
     playerNames: state.playerNames || [],
@@ -580,16 +693,25 @@ function getRuntimeInfo(serverId) {
 
 // Called before a server is deleted: kill the process tree, drop map entry,
 // and remove the server directory from disk (best effort).
-function cleanup(serverId) {
-  if (mode === 'real') {
-    cleanupReal(serverId);
-  } else {
-    cleanupSim(serverId);
-  }
+async function cleanup(serverId) {
+  return withServerOperation(serverId, async () => {
+    if (mode === 'real') {
+      await cleanupDocker(serverId);
+    } else {
+      cleanupSim(serverId);
+    }
+  });
 }
 
 // Synchronous-ish teardown on app shutdown: ask nicely, SIGTERM shortly after.
 function shutdownAll() {
+  if (mode === 'real' && dockerRuntime) {
+    dockerRuntime.shutdown();
+    running.clear();
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    return;
+  }
   for (const [id, state] of [...running]) {
     if (state.proc) {
       state.restartPending = false;
@@ -616,6 +738,12 @@ function shutdownAll() {
   running.clear();
 }
 
+async function sample(serverId) {
+  if (mode !== 'real' || !dockerRuntime) return null;
+  const server = serverService.getServer(serverId);
+  return server ? dockerRuntime.sample(serverId, server.cpuCores) : null;
+}
+
 module.exports = {
   init,
   getMode,
@@ -630,4 +758,7 @@ module.exports = {
   log,
   buildJavaArgs,
   parseCpuList,
+  sample,
+  validateRunConfig,
+  javaBinaryForVersion,
 };

@@ -8,6 +8,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { db, now } = require('./database');
+const { javaBinaryForVersion } = require('./javaRuntime');
+const { withServerOperation } = require('./serverOperationLock');
 const modrinth = require('./modrinthService');
 const curseforge = require('./curseforgeService');
 
@@ -410,9 +412,9 @@ async function downloadFile(url, dest, onProgress) {
 // Forge/NeoForge installer subprocess
 // ---------------------------------------------------------------------------
 
-function runJavaInstaller(installerPath, cwd, onLine) {
+function runJavaInstaller(installerPath, cwd, mcVersion, onLine) {
   return new Promise((resolve, reject) => {
-    const child = spawn('java', ['-jar', installerPath, '--installServer'], { cwd });
+    const child = spawn(javaBinaryForVersion(mcVersion), ['-jar', installerPath, '--installServer'], { cwd });
     let lastUpdate = 0;
     let buf = '';
 
@@ -516,6 +518,11 @@ async function runInstall(io, jobId, ctx) {
   };
 
   try {
+    const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(serverId);
+    if (!server || server.status !== 'offline') {
+      throw new Error('Server muss für die Installation offline sein.');
+    }
+    javaBinaryForVersion(mcVersion);
     const dir = serverDir(serverId);
     fs.mkdirSync(dir, { recursive: true });
 
@@ -569,7 +576,7 @@ async function runInstall(io, jobId, ctx) {
     // 3. Run the installer for forge/neoforge (dlEnd -> installEnd)
     if (resolved.installerFile) {
       let tick = 0;
-      await runJavaInstaller(path.join(dir, resolved.installerFile), dir, (line) => {
+      await runJavaInstaller(path.join(dir, resolved.installerFile), dir, mcVersion, (line) => {
         tick += 1;
         setState({
           status: 'running',
@@ -714,7 +721,7 @@ function createInstallJob(io, { serverId, loader, mcVersion, port, wipe, modpack
   }
   const jobId = createJobRow({ serverId, loader, mcVersion });
   setImmediate(() => {
-    runInstall(io, jobId, { serverId, loader, mcVersion, port, wipe, modpack }).catch((err) => {
+    withServerOperation(serverId, () => runInstall(io, jobId, { serverId, loader, mcVersion, port, wipe, modpack })).catch((err) => {
       // runInstall already catches everything; this is a last-resort guard.
       console.error(`installer job ${jobId} crashed:`, err);
     });

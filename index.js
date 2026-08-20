@@ -13,10 +13,10 @@ const backupService = require('./src/services/backupService');
 const updateService = require('./src/services/updateService');
 const setupService = require('./src/services/setupService');
 
-function main() {
+async function main() {
   const { server, io } = createPanel();
   if (config.demoMode) serverService.seedDemoData();
-  processManager.init(io);
+  await processManager.init(io);
   backupService.init(io);
   updateService.init(io);
   setupService.logSetupInstructions();
@@ -40,6 +40,11 @@ function main() {
   return { server, io };
 }
 
-if (require.main === module) main();
+if (require.main === module) {
+  main().catch((error) => {
+    console.error('[boot] Start fehlgeschlagen:', error);
+    process.exit(1);
+  });
+}
 
 module.exports = { main };

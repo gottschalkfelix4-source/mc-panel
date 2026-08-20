@@ -221,7 +221,7 @@ async function action(serverId, input, processManager) {
   try {
     if (processManager && typeof processManager.status === 'function' &&
         processManager.status(serverId) === 'online' && typeof processManager.sendCommand === 'function') {
-      processManager.sendCommand(serverId, command);
+      await processManager.sendCommand(serverId, command);
     }
   } catch {
     // The JSON files are authoritative; a console synchronization failure is non-fatal.

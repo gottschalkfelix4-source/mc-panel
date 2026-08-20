@@ -553,6 +553,10 @@ async function runJob(io, jobId, ctx) {
   };
 
   try {
+    const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(serverId);
+    if (!server || server.status !== 'offline') {
+      throw new Error('Server muss für die Modpack-Installation offline sein.');
+    }
     // 1. Resolve version + primary file (5%)
     setState({ status: 'running', stage: 'resolving', percent: 5 });
     const svc = PROVIDERS[provider];

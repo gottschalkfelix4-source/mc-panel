@@ -7,6 +7,8 @@ const { pipeline } = require('stream/promises');
 const { ZipArchive } = require('archiver');
 const unzipper = require('unzipper');
 const backupPolicy = require('./backupPolicyService');
+const { db } = require('./database');
+const { withServerOperation } = require('./serverOperationLock');
 
 const fsp = fs.promises;
 const SERVERS_DIR = process.env.SERVERS_DIR || './servers';
@@ -371,6 +373,10 @@ function isZipSymlink(entry) {
 
 async function runRestore(job) {
   try {
+    const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(job.serverId);
+    if (!server || server.status !== 'offline') {
+      throw serviceError('SERVER_NOT_OFFLINE', 'Server must be offline before restore');
+    }
     updateJob(job, { status: 'running', percent: 1, stage: 'Validating archive' });
     const { serverRoot, backupRoot } = roots(job.serverId);
     const archivePath = await getPath(job.serverId, job.backupId);
@@ -421,7 +427,7 @@ function restore(serverId, backupId) {
   roots(serverId);
   const id = validateBackupId(backupId);
   const job = newJob(serverId, 'restore', id);
-  setImmediate(() => runRestore(job));
+  setImmediate(() => withServerOperation(serverId, () => runRestore(job)));
   return publicJob(job);
 }
 

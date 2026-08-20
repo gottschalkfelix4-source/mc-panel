@@ -9,10 +9,11 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
 - 🎮 **Echte Server** — Vanilla, Paper, Fabric, Forge & NeoForge werden per
   **First-Install-Wizard** heruntergeladen und installiert (Loader → Version → EULA →
   Install mit Live-Fortschritt), dann als echte Java-Prozesse gestartet
-  (OpenJDK 21 im Docker-Image). Fallback: Simulationsmodus, wenn kein Java verfügbar ist.
+  (OpenJDK 17/21/25, unterstützte Minecraft-Versionen ab 1.17). Jeder Server läuft isoliert in einem eigenen
+  Docker-Container und überlebt Neustarts des Panels.
 - 📈 **Flüssige Metriken** — CPU / RAM / TPS / Spieler als geglättete Canvas-Charts
   (LERP-Interpolation via requestAnimationFrame). Im Real-Modus kommen CPU/RAM echt vom
-  Java-Prozess (pidusage), Spielerzahlen via `list`-Befehl. Alle Ticks werden in
+  Servercontainer (Docker Stats), Spielerzahlen via `list`-Befehl. Alle Ticks werden in
   **SQLite persistiert** — die Charts bauen sich nie von null auf.
 - 🧩 **Modpack-Browser** — Suche & Installation von [Modrinth](https://modrinth.com)
   (ohne API-Key) und [CurseForge](https://console.curseforge.com/) (API-Key nötig).
@@ -39,8 +40,8 @@ Animationen, flüssigen Live-Metriken (persistiert!) und Modpack-Installation vi
   Modpacks installieren (ansonsten read-only), Operatoren verwalten ausschließlich
   zugewiesene Server, Admins verwalten zusätzlich Benutzer/Secrets und weisen
   Serverzugriffe zu.
-- 🧠 **Ressourcenzuweisung** — Admin-only CPU-Kerne und RAM pro Server. CPU wird
-  per Linux-`taskset` gebunden und zusätzlich via JVM `ActiveProcessorCount` begrenzt;
+- 🧠 **Ressourcenzuweisung** — Admin-only CPU-Kerne und RAM pro Server. Docker-cgroups
+  begrenzen CPU und RAM, zusätzlich kennt die JVM das Limit via `ActiveProcessorCount`;
   Nicht-Admins können die Zuweisung sehen, aber niemals verändern.
 - 🔄 **Modpack-Updates** — automatische Prüfung auf neuere Versionen (Modrinth &
   CurseForge), Meldung im Web-Interface mit Update-Button. Vor jedem Update wird
@@ -100,8 +101,13 @@ docker compose up -d --build
 
 Läuft standardmäßig auf **`http://localhost:3100`**. Der veröffentlichte Host-Port
 kann über `MC_PANEL_PORT` in `.env` geändert werden.
-Daten persistieren in den Volumes `panel-data` (SQLite-DB inkl. Metrik-Historie) und
-`panel-servers` (heruntergeladene Modpacks).
+Daten persistieren in den Volumes `panel-data` (SQLite-DB inkl. Metrik-Historie),
+`panel-servers` (Serverdateien und Modpacks) und `panel-backups` (ZIP-Backups).
+
+Das Panel benötigt Zugriff auf die lokale Docker Engine. Unter Linux muss in `.env`
+`DOCKER_GID` auf die Gruppen-ID von `/var/run/docker.sock` gesetzt werden, zum Beispiel
+mit `stat -c '%g' /var/run/docker.sock`. Der Socket gewährt dem Panel weitreichende
+Rechte auf dem Docker-Host und darf nicht öffentlich exponiert werden.
 
 Bei einer frischen Datenbank wird der einmalige Setup-Token mit
 `docker compose logs mc-panel` ausgegeben. Die Weboberfläche fragt diesen Token ab und
@@ -109,17 +115,24 @@ erstellt damit den ersten Administrator. Es werden keine bekannten Standardzugä
 
 ```bash
 docker compose logs -f     # Logs ansehen
-docker compose down        # Stoppen
+docker compose down        # Nur das Panel stoppen/entfernen
 ```
+
+Laufende Minecraft-Container werden durch `docker compose down` bewusst nicht gestoppt.
+Dadurch überleben sie Panel-Wartungen. Für ein vollständiges Herunterfahren zuerst alle
+Server über die Power-Aktionen im Panel stoppen und danach Compose herunterfahren.
 
 ### Lokal
 
 ```bash
 npm install
+# In .env: SIMULATION_MODE=true
 npm start          # oder: npm run dev (nodemon)
 ```
 
-Dann `http://localhost:3000` öffnen (bzw. `PORT` aus `.env`). Für die lokale
+Dann `http://localhost:3000` öffnen (bzw. `PORT` aus `.env`). Außerhalb des
+Panel-Containers muss `SIMULATION_MODE=true` gesetzt sein; der Real-Modus benötigt den
+Docker-Socket und die Mount-Metadaten des Compose-Deployments. Für die lokale
 Ersteinrichtung steht der Setup-Token im Terminal. Demo-Server werden nur mit
 `DEMO_MODE=true` erzeugt.
 
@@ -135,7 +148,10 @@ Ersteinrichtung steht der Setup-Token im Terminal. Demo-Server werden nur mit
 | `TRUST_PROXY` | `0` | Anzahl vertrauenswürdiger Reverse-Proxy-Hops für korrekte IP-basierte Limits |
 | `AUDIT_RETENTION_DAYS` | `90` | Aufbewahrung des Audit-Logs in Tagen |
 | `DEMO_MODE` | `false` | Erstellt Demo-Server und Metrik-Historie nur bei expliziter Aktivierung |
-| `SIMULATION_MODE` | `false` (Docker) | `true` = simulierte Server (kein Java nötig), `false` = echte Java-Prozesse. Ohne Java-Binary fällt das Panel automatisch in die Simulation zurück |
+| `DOCKER_GID` | `0` | Gruppen-ID des Docker-Sockets (Linux) |
+| `PANEL_INSTANCE_ID` | automatisch | Optionaler stabiler Override; standardmäßig aus Compose-Projekt und Server-Volume abgeleitet |
+| `MC_BIND_IP` | `0.0.0.0` | Host-IP für veröffentlichte Minecraft-Ports |
+| `SIMULATION_MODE` | `false` (Docker) | `true` = simulierte Server, `false` = isolierte Minecraft-Container; der Real-Modus benötigt Zugriff auf die Docker Engine |
 | `METRICS_INTERVAL_MS` | `2000` | Tick-Intervall der Metriken |
 | `METRICS_RETENTION_HOURS` | `48` | Aufbewahrung der Metrik-Historie |
 | `CURSEFORGE_API_KEY` | — | Optional. Ohne Key bleibt CurseForge deaktiviert (Modrinth geht immer). Alternativ zur Laufzeit über die Einstellungen-Seite setzen (DB hat Vorrang) |
@@ -151,7 +167,7 @@ Alle Endpunkte (außer `/health` und `/api/auth/login`) benötigen `Authorizatio
 | POST | `/api/auth/password` | Eigenes Passwort ändern und alte Sitzungen widerrufen |
 | GET | `/api/servers` | Server inkl. letzter Metrik |
 | POST | `/api/servers` | Server erstellen |
-| POST | `/api/servers/:id/start|stop|restart` | Power-Aktionen (echte Java-Prozesse) |
+| POST | `/api/servers/:id/start|stop|restart` | Power-Aktionen für isolierte Servercontainer |
 | POST | `/api/servers/:id/command` | Befehl an Server-stdin senden |
 | GET | `/api/loaders` | Verfügbare Loader + Modus (`real`/`simulation`) |
 | GET | `/api/loaders/:loader/versions` | MC-Versionen eines Loaders (live von Mojang/Paper/Fabric/Forge/NeoForge) |

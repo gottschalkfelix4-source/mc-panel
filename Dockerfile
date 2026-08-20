@@ -1,14 +1,21 @@
 # MC Panel — all-in-one image (Express API + Socket.IO + static frontend)
+FROM eclipse-temurin:17-jre AS java17
+
 # Node 24 is required for the built-in `node:sqlite` module (no native sqlite build).
-# Trixie variant: ships OpenJDK 21 (Bookworm only has 17, too old for MC 1.20.5+).
+# Trixie variant provides the Java versions required by supported Minecraft releases.
 FROM node:24-trixie-slim
 
 ENV NODE_ENV=production
 
-# Java 21 runtime for real Minecraft servers (1.20.5+; older versions run fine too)
+# Stable symlinks keep the Java 17/21/25 launch paths architecture-neutral.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openjdk-21-jre-headless \
+    && apt-get install -y --no-install-recommends openjdk-21-jre-headless openjdk-25-jre-headless \
+    && arch="$(dpkg --print-architecture)" \
+    && mkdir -p /opt/java \
+    && ln -s "/usr/lib/jvm/java-21-openjdk-${arch}" /opt/java/21 \
+    && ln -s "/usr/lib/jvm/java-25-openjdk-${arch}" /opt/java/25 \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=java17 /opt/java/openjdk /opt/java/17
 
 WORKDIR /app
 

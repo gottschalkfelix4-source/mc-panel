@@ -8,6 +8,7 @@ const modrinth = require('./modrinthService');
 const curseforge = require('./curseforgeService');
 const modpackService = require('./modpackService');
 const backupService = require('./backupService');
+const { withServerOperation } = require('./serverOperationLock');
 
 const PROVIDERS = { modrinth, curseforge };
 const CHECK_INTERVAL_MIN = Math.max(
@@ -214,7 +215,7 @@ function startUpdate(io, { serverId, provider, projectId, versionId, name, iconU
   });
   activeUpdates.add(serverId);
   setImmediate(() => {
-    runUpdate(io, jobId, { serverId, provider, projectId, versionId, name, iconUrl })
+    withServerOperation(serverId, () => runUpdate(io, jobId, { serverId, provider, projectId, versionId, name, iconUrl }))
       .catch((err) => console.error(`[updates] update job ${jobId} crashed:`, err))
       .finally(() => activeUpdates.delete(serverId));
   });
@@ -225,6 +226,12 @@ async function runUpdate(io, jobId, { serverId, provider, projectId, versionId, 
   const progress = (patch) => {
     if (io) io.to(`server:${serverId}`).emit('modpack:progress', { jobId, serverId, ...patch });
   };
+
+  const server = db.prepare('SELECT status FROM servers WHERE id = ?').get(serverId);
+  if (!server || server.status !== 'offline') {
+    failJob(io, jobId, serverId, 'Server muss für das Update offline sein.');
+    return;
+  }
 
   // 1. Safety backup before touching any files.
   progress({ status: 'running', stage: 'Erstelle Backup vor dem Update …', percent: 0 });
